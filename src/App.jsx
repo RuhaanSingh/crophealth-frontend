@@ -8,20 +8,32 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs.j
 import { Alert, AlertDescription } from '@/components/ui/alert.jsx'
 import { Badge } from '@/components/ui/badge.jsx'
 import { Separator } from '@/components/ui/separator.jsx'
-import { 
-  MapPin, 
-  Upload, 
-  Camera, 
-  BarChart3, 
-  Leaf, 
-  AlertTriangle, 
-  CheckCircle, 
+import {
+  MapPin,
+  Upload,
+  Camera,
+  BarChart3,
+  Leaf,
+  AlertTriangle,
+  CheckCircle,
   User,
   LogOut,
   Plus,
   Eye
 } from 'lucide-react'
 import axios from 'axios'
+import 'leaflet/dist/leaflet.css';
+import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
+import L from 'leaflet';
+
+// Fix for default marker icon issue with Webpack/Leaflet
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon-2x.png',
+  iconUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-shadow.png',
+} );
+
 import './App.css'
 
 // API Configuration
@@ -29,7 +41,7 @@ const API_BASE_URL = 'https://crophealth-backend.onrender.com/api'
 
 // API Service
 class APIService {
-  constructor() {
+  constructor( ) {
     this.token = localStorage.getItem('token')
     this.axios = axios.create({
       baseURL: API_BASE_URL,
@@ -215,6 +227,37 @@ function Dashboard({ user, onLogout }) {
   const [fields, setFields] = useState([])
   const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [showAddFieldForm, setShowAddFieldForm] = useState(false)
+  const [newFieldData, setNewFieldData] = useState({
+    name: '',
+    crop_type: '',
+    polygon_geometry: '' // Will store GeoJSON string
+  })
+  const [addFieldLoading, setAddFieldLoading] = useState(false)
+  const [addFieldError, setAddFieldError] = useState('')
+  const [addFieldSuccess, setAddFieldSuccess] = useState(false)
+  const [uploadImageLoading, setUploadImageLoading] = useState(false)
+  const [uploadImageError, setUploadImageError] = useState('')
+  const [uploadImageSuccess, setUploadImageSuccess] = useState(false)
+  const [selectedFile, setSelectedFile] = useState(null)
+  const [imageUploadFieldId, setImageUploadFieldId] = useState('')
+  const [imageUploadLat, setImageUploadLat] = useState('')
+  const [imageUploadLon, setImageUploadLon] = useState('')
+
+  // State for map interaction
+  const [mapCenter, setMapCenter] = useState([34.0522, -118.2437]); // Default to Los Angeles
+  const [markerPosition, setMarkerPosition] = useState(null);
+  const [polygonPoints, setPolygonPoints] = useState([]);
+
+  // Map click handler for field creation
+  function MapClickHandler() {
+    const map = useMapEvents({
+      click(e) {
+        setPolygonPoints((prevPoints) => [...prevPoints, [e.latlng.lat, e.latlng.lng]]);
+      },
+    });
+    return null;
+  }
 
   useEffect(() => {
     loadData()
@@ -232,6 +275,77 @@ function Dashboard({ user, onLogout }) {
       console.error('Error loading data:', err)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleAddField = async (e) => {
+    e.preventDefault()
+    setAddFieldLoading(true)
+    setAddFieldError('')
+    setAddFieldSuccess(false)
+
+    try {
+      // Convert polygonPoints to GeoJSON string
+      if (polygonPoints.length < 3) {
+        setAddFieldError('Please draw a polygon with at least 3 points on the map.');
+        return;
+      }
+      const geoJsonPolygon = {
+        type: 'Polygon',
+        coordinates: [polygonPoints.map(p => [p[1], p[0]])] // GeoJSON is [lon, lat]
+      };
+      const fieldDataToSend = {
+        ...newFieldData,
+        polygon_geometry: JSON.stringify(geoJsonPolygon)
+      };
+
+      await api.createField(fieldDataToSend)
+      setAddFieldSuccess(true)
+      setNewFieldData({ name: '', crop_type: '', polygon_geometry: '' })
+      setPolygonPoints([]); // Clear drawn polygon
+      setShowAddFieldForm(false)
+      loadData() // Reload fields after adding new one
+    } catch (err) {
+      setAddFieldError(err.response?.data?.error || 'Failed to add field')
+    } finally {
+      setAddFieldLoading(false)
+    }
+  }
+
+  const handleImageFileChange = (e) => {
+    setSelectedFile(e.target.files[0])
+  }
+
+  const handleImageUpload = async (e) => {
+    e.preventDefault()
+    setUploadImageLoading(true)
+    setUploadImageError('')
+    setUploadImageSuccess(false)
+
+    if (!selectedFile || !imageUploadFieldId || !imageUploadLat || !imageUploadLon) {
+      setUploadImageError('Please fill all image upload fields and select a file.')
+      setUploadImageLoading(false)
+      return
+    }
+
+    const formData = new FormData()
+    formData.append('image_file', selectedFile)
+    formData.append('field_id', imageUploadFieldId)
+    formData.append('latitude', imageUploadLat)
+    formData.append('longitude', imageUploadLon)
+
+    try {
+      await api.uploadImage(formData)
+      setUploadImageSuccess(true)
+      setSelectedFile(null)
+      setImageUploadFieldId('')
+      setImageUploadLat('')
+      setImageUploadLon('')
+      loadData() // Reload data to update stats
+    } catch (err) {
+      setUploadImageError(err.response?.data?.error || 'Failed to upload image')
+    } finally {
+      setUploadImageLoading(false)
     }
   }
 
@@ -327,7 +441,7 @@ function Dashboard({ user, onLogout }) {
                     <MapPin className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                     <h3 className="text-lg font-medium text-gray-900 mb-2">No fields yet</h3>
                     <p className="text-gray-600 mb-4">Create your first field to start monitoring crop health</p>
-                    <Button>
+                    <Button onClick={() => setShowAddFieldForm(true)}>
                       <Plus className="h-4 w-4 mr-2" />
                       Add Field
                     </Button>
@@ -362,12 +476,78 @@ function Dashboard({ user, onLogout }) {
           <TabsContent value="fields" className="space-y-6">
             <div className="flex justify-between items-center">
               <h2 className="text-2xl font-bold">My Fields</h2>
-              <Button>
+              <Button onClick={() => setShowAddFieldForm(true)}>
                 <Plus className="h-4 w-4 mr-2" />
                 Add New Field
               </Button>
             </div>
             
+            {showAddFieldForm && (
+              <Card className="mt-4">
+                <CardHeader>
+                  <CardTitle>Add New Field</CardTitle>
+                  <CardDescription>Enter field details and draw its polygon on the map.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <form onSubmit={handleAddField} className="space-y-4">
+                    <div>
+                      <Label htmlFor="fieldName">Field Name</Label>
+                      <Input
+                        id="fieldName"
+                        type="text"
+                        value={newFieldData.name}
+                        onChange={(e) => setNewFieldData({ ...newFieldData, name: e.target.value })}
+                        required
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="cropType">Crop Type</Label>
+                      <Input
+                        id="cropType"
+                        type="text"
+                        value={newFieldData.crop_type}
+                        onChange={(e) => setNewFieldData({ ...newFieldData, crop_type: e.target.value })}
+                        required
+                      />
+                    </div>
+                    <div>
+                      <Label>Draw Field Polygon (Click on map to add points)</Label>
+                      <div className="h-64 w-full rounded-md overflow-hidden border">
+                        <MapContainer center={mapCenter} zoom={10} style={{ height: '100%', width: '100%' }}>
+                          <TileLayer
+                            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                            attribution='&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors'
+                          />
+                          <MapClickHandler />
+                          {polygonPoints.map((position, idx ) => (
+                            <Marker key={idx} position={position} />
+                          ))}
+                        </MapContainer>
+                      </div>
+                      <Button type="button" variant="outline" size="sm" onClick={() => setPolygonPoints([])} className="mt-2">
+                        Clear Polygon
+                      </Button>
+                    </div>
+                    {addFieldError && (
+                      <Alert variant="destructive">
+                        <AlertTriangle className="h-4 w-4" />
+                        <AlertDescription>{addFieldError}</AlertDescription>
+                      </Alert>
+                    )}
+                    {addFieldSuccess && (
+                      <Alert>
+                        <CheckCircle className="h-4 w-4" />
+                        <AlertDescription>Field added successfully!</AlertDescription>
+                      </Alert>
+                    )}
+                    <Button type="submit" className="w-full" disabled={addFieldLoading}>
+                      {addFieldLoading ? 'Adding Field...' : 'Submit Field'}
+                    </Button>
+                  </form>
+                </CardContent>
+              </Card>
+            )}
+
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {fields.map((field) => (
                 <Card key={field.id}>
@@ -412,15 +592,72 @@ function Dashboard({ user, onLogout }) {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="text-center py-12 border-2 border-dashed border-gray-300 rounded-lg">
-                  <Upload className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">Upload Image</h3>
-                  <p className="text-gray-600 mb-4">Drag and drop an image or click to browse</p>
-                  <Button>
-                    <Camera className="h-4 w-4 mr-2" />
-                    Choose Image
+                <form onSubmit={handleImageUpload} className="space-y-4">
+                  <div>
+                    <Label htmlFor="imageFile">Image File</Label>
+                    <Input
+                      id="imageFile"
+                      type="file"
+                      accept="image/*"
+                      onChange={handleImageFileChange}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="imageField">Select Field</Label>
+                    <select
+                      id="imageField"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                      value={imageUploadFieldId}
+                      onChange={(e) => setImageUploadFieldId(e.target.value)}
+                      required
+                    >
+                      <option value="">-- Select a field --</option>
+                      {fields.map(field => (
+                        <option key={field.id} value={field.id}>{field.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label htmlFor="imageLat">Latitude</Label>
+                      <Input
+                        id="imageLat"
+                        type="number"
+                        step="any"
+                        value={imageUploadLat}
+                        onChange={(e) => setImageUploadLat(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="imageLon">Longitude</Label>
+                      <Input
+                        id="imageLon"
+                        type="number"
+                        step="any"
+                        value={imageUploadLon}
+                        onChange={(e) => setImageUploadLon(e.target.value)}
+                        required
+                      />
+                    </div>
+                  </div>
+                  {uploadImageError && (
+                    <Alert variant="destructive">
+                      <AlertTriangle className="h-4 w-4" />
+                      <AlertDescription>{uploadImageError}</AlertDescription>
+                    </Alert>
+                  )}
+                  {uploadImageSuccess && (
+                    <Alert>
+                      <CheckCircle className="h-4 w-4" />
+                      <AlertDescription>Image uploaded successfully!</AlertDescription>
+                    </Alert>
+                  )}
+                  <Button type="submit" className="w-full" disabled={uploadImageLoading}>
+                    {uploadImageLoading ? 'Uploading Image...' : 'Upload Image'}
                   </Button>
-                </div>
+                </form>
               </CardContent>
             </Card>
           </TabsContent>
@@ -510,4 +747,3 @@ function App() {
 }
 
 export default App
-
